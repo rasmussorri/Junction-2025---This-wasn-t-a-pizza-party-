@@ -69,3 +69,10 @@ yarn.lock
 pip-log.txt
 pip-delete-this-directory.txt
 
+# Data files
+*.dat
+.dat files/
+
+# Evio repository (external dependency - keep clean)
+evio/
+
