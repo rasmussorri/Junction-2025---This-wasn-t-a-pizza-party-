@@ -69,3 +69,6 @@ yarn.lock
 pip-log.txt
 pip-delete-this-directory.txt
 
+# Custom
+*cache
+/data
