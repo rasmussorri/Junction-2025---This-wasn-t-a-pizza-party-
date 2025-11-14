@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 # evio
 
 Minimal Python library for standardized handling of event camera data.
@@ -124,4 +125,47 @@ decoded_polarity = (raw_polarity > 0).astype(np.int8, copy=False)
 
 ## License
 MIT
+=======
+# Junction 2025
+
+**Team:** This wasn't a pizza party?
+
+## About
+
+Project description coming soon...
+
+## Getting Started
+
+### Prerequisites
+
+- List your prerequisites here
+
+### Installation
+
+```bash
+# Installation steps here
+```
+
+### Usage
+
+```bash
+# Usage instructions here
+```
+
+## Development
+
+### Setup
+
+```bash
+# Development setup instructions
+```
+
+## Team
+
+This wasn't a pizza party?
+
+## License
+
+[Add your license here]
+>>>>>>> d77ded5b3cdded87e4d766086ab49af0cafec847
 
