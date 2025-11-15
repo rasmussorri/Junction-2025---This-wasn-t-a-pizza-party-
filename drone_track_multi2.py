@@ -176,8 +176,8 @@ def render_frame(x, y, p, width, height):
 def draw_hud(frame, status, propellers, overall_centroid, roi, rpm):
     """Draws the HUD, marking all propellers and the overall center."""
     if status == TrackingStatus.TRACKING and propellers:
-        color = (0, 255, 0)
-        text = f"STATUS: TRACKING ({len(propellers)} props)"
+        color = (0, 0, 255)
+        text = f"STATUS: TRACKING (propeller estimate: {len(propellers)})"
         if roi:
             cv2.rectangle(frame, (roi[0], roi[1]), (roi[2], roi[3]), (255, 255, 0), 1)
         
@@ -188,18 +188,17 @@ def draw_hud(frame, status, propellers, overall_centroid, roi, rpm):
         # Draw a large crosshair on the overall center of the drone
         if overall_centroid:
             x, y = overall_centroid
-            cv2.line(frame, (x - 20, y), (x + 20, y), color, 2)
-            cv2.line(frame, (x, y - 20), (x, y + 20), color, 2)
+            cv2.line(frame, (x - 20, y), (x + 20, y), (0, 0, 255), 2)
+            cv2.line(frame, (x, y - 20), (x, y + 20), (0, 0, 255), 2)
     else:
-        color = (0, 0, 255)
+        color = (255, 100, 0)
         text = "STATUS: SEARCHING"
     
     cv2.putText(frame, text, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2)
     
-    # Display RPM
-    rpm_text = f"RPM: {int(rpm)}"
-    text_size, _ = cv2.getTextSize(rpm_text, cv2.FONT_HERSHEY_SIMPLEX, 0.7, 2)
-    cv2.putText(frame, rpm_text, (frame.shape[1] - text_size[0] - 10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+    # Display RPM below status
+    rpm_text = f"RPM ESTIMATE: {int(rpm)}"
+    cv2.putText(frame, rpm_text, (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
 
 def main():
     # Hardcoded file path
