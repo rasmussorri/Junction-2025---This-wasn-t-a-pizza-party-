@@ -436,7 +436,8 @@ def main() -> None:
     parser.add_argument(
         "dat",
         nargs='?',
-        default="C:\\Users\\Henri\\Downloads\\Junction\\Data\\fred-1-20251114T194658Z-1-001\\fred-1\\Event\\events.dat",
+        default="C:\\Users\\Henri\\Downloads\\Junction\\Data\\drone_moving-20251114T191633Z-1-002\\drone_moving\\drone_moving.dat",
+        #"C:\\Users\\Henri\\Downloads\\Junction\\Data\\fred-1-20251114T194658Z-1-001\\fred-1\\Event\\events.dat",
         #"C:\\Users\\Henri\\Downloads\\Junction\\Data\\drone_moving-20251114T191633Z-1-002\\drone_moving\\drone_moving.dat",
         help="Path to .dat file (e.g., path/to/drone_moving.dat)"
     )

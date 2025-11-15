@@ -122,7 +122,7 @@ def find_drone_cluster(
     H_score[H_density < min_density] = 0
     
     # Find ALL cells that meet the threshold
-    valid_cells = H_score >= score_threshold
+    valid_cells = H_score >= np.float64(score_threshold)
     
     # Count the number of propellers detected
     num_propellers = int(np.sum(valid_cells))
