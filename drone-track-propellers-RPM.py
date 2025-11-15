@@ -1,8 +1,10 @@
 import argparse
 import time
+from collections import deque
 
 import cv2
 import numpy as np
+from scipy import signal
 
 # We need these from the 'evio' library
 try:
@@ -166,6 +168,131 @@ def find_drone_cluster(
     return centroid, combined_cluster_mask, num_propellers
 
 
+class RPMTracker:
+    """Tracks RPM of propellers using event count analysis."""
+    
+    def __init__(self, roi_radius: int = 40, min_windows: int = 10, num_blades: int = 2):
+        self.roi_radius = roi_radius
+        self.min_windows = min_windows
+        self.num_blades = num_blades
+        
+        # History buffers
+        self.event_counts = deque(maxlen=100)
+        self.timestamps = deque(maxlen=100)
+        self.window_durations = deque(maxlen=100)
+        
+    def add_window(self, centroid: tuple[int, int] | None, x_coords: np.ndarray, 
+                   y_coords: np.ndarray, timestamp_us: int, window_duration_us: int):
+        """Add a new window of event data."""
+        if centroid is None:
+            return
+        
+        # Count events in circular ROI
+        cx, cy = centroid
+        distances = np.sqrt((x_coords - cx)**2 + (y_coords - cy)**2)
+        event_count = np.sum(distances <= self.roi_radius)
+        
+        self.event_counts.append(event_count)
+        self.timestamps.append(timestamp_us)
+        self.window_durations.append(window_duration_us)
+    
+    def calculate_rpm_peak_detection(self) -> tuple[float, float]:
+        """Calculate RPM using peak detection on event count signal."""
+        if len(self.event_counts) < self.min_windows:
+            return 0.0, 0.0
+        
+        counts = np.array(self.event_counts)
+        times = np.array(self.timestamps) / 1e6  # Convert to seconds
+        
+        # Smooth the signal
+        if len(counts) > 5:
+            # Ensure window length is odd and <= array size
+            window_length = min(len(counts) // 2 * 2 + 1, 11)
+            if window_length > len(counts):
+                window_length = len(counts) if len(counts) % 2 == 1 else len(counts) - 1
+            if window_length >= 4:  # Minimum for polyorder 3
+                counts = signal.savgol_filter(counts, window_length, min(3, window_length - 1))
+        
+        # Find peaks
+        mean_count = np.mean(counts)
+        peaks, _ = signal.find_peaks(counts, height=mean_count * 0.2, distance=2)
+        
+        if len(peaks) < 2:
+            return 0.0, 0.0
+        
+        # Measure time between peaks
+        peak_times = times[peaks]
+        intervals = np.diff(peak_times)
+        
+        # Filter to realistic RPM range (100-10000 RPM)
+        valid_intervals = intervals[(intervals > 60 / 10000) & (intervals < 60 / 100)]
+        
+        if len(valid_intervals) == 0:
+            return 0.0, 0.0
+        
+        # Use median interval
+        blade_period = np.median(valid_intervals)
+        rpm = 60 / (blade_period * self.num_blades)
+        
+        # Confidence based on consistency
+        variance = np.std(valid_intervals) / np.mean(valid_intervals) if len(valid_intervals) > 1 else 1.0
+        confidence = max(0.0, 1.0 - variance)
+        
+        return float(rpm), float(confidence)
+    
+    def calculate_rpm_fft(self) -> tuple[float, float]:
+        """Calculate RPM using FFT analysis."""
+        if len(self.event_counts) < self.min_windows:
+            return 0.0, 0.0
+        
+        counts = np.array(self.event_counts)
+        
+        # Normalize
+        counts_norm = (counts - np.mean(counts)) / (np.std(counts) + 1e-6)
+        
+        # Apply Hanning window
+        window = np.hanning(len(counts_norm))
+        counts_windowed = counts_norm * window
+        
+        # Compute FFT
+        fft = np.fft.rfft(counts_windowed)
+        power = np.abs(fft) ** 2
+        
+        # Get frequencies
+        window_durations = np.array(self.window_durations)
+        avg_dt = np.mean(window_durations) / 1e6  # seconds
+        freqs = np.fft.rfftfreq(len(counts_windowed), d=avg_dt)
+        
+        # Find dominant frequency (skip DC component)
+        if len(power) < 2:
+            return 0.0, 0.0
+        
+        dominant_idx = np.argmax(power[1:]) + 1
+        dominant_freq = freqs[dominant_idx]
+        
+        # Convert to RPM
+        rpm = (dominant_freq * 60) / self.num_blades
+        
+        # Validate range
+        if rpm < 100 or rpm > 10000:
+            return 0.0, 0.0
+        
+        return float(rpm), 0.3  # Fixed confidence for FFT
+    
+    def get_rpm(self) -> tuple[float, float]:
+        """Get current RPM estimate with confidence."""
+        rpm_peak, conf_peak = self.calculate_rpm_peak_detection()
+        rpm_fft, conf_fft = self.calculate_rpm_fft()
+        
+        # Prefer peak detection if confident
+        if conf_peak > 0.5:
+            return rpm_peak, conf_peak
+        elif rpm_fft > 0:
+            return rpm_fft, conf_fft
+        else:
+            return 0.0, 0.0
+
+
 def calculate_speed(
     current_centroid, prev_centroid, 
     current_time_us, prev_time_us
@@ -200,6 +327,9 @@ def draw_tracking_overlay(
     centroid: tuple[int, int] | None, 
     speed: float,
     avg_propellers: int = 0,
+    rpm: float = 0.0,
+    rpm_confidence: float = 0.0,
+    roi_radius: int = 40,
     cluster_mask: np.ndarray | None = None, 
     x_coords: np.ndarray | None = None, 
     y_coords: np.ndarray | None = None
@@ -215,6 +345,9 @@ def draw_tracking_overlay(
         return
     
     x, y = centroid
+    
+    # Draw ROI circle for RPM tracking
+    cv2.circle(frame, (x, y), roi_radius, (0, 255, 255), 2)
     
     # Draw a bounding box around the cluster
     if cluster_mask is not None and x_coords is not None and y_coords is not None:
@@ -252,6 +385,14 @@ def draw_tracking_overlay(
         cv2.putText(
             frame, f"PREDICTED NUM OF PROPELLERS: {avg_propellers}", (10, 140),
             cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2, cv2.LINE_AA
+        )
+    
+    # Display RPM
+    if rpm > 0:
+        rpm_color = (0, 255, 0) if rpm_confidence > 0.5 else (0, 165, 255)  # Green if confident, orange if low
+        cv2.putText(
+            frame, f"AVG RPM: {rpm:.0f} (conf: {rpm_confidence:.2f})", (10, 170),
+            cv2.FONT_HERSHEY_SIMPLEX, 0.6, rpm_color, 2, cv2.LINE_AA
         )
 
 
@@ -295,7 +436,8 @@ def main() -> None:
     parser.add_argument(
         "dat",
         nargs='?',
-        default="C:\\Users\\Henri\\Downloads\\Junction\\Data\\drone_moving-20251114T191633Z-1-002\\drone_moving\\drone_moving.dat",
+        default="C:\\Users\\Henri\\Downloads\\Junction\\Data\\fred-1-20251114T194658Z-1-001\\fred-1\\Event\\events.dat",
+        #"C:\\Users\\Henri\\Downloads\\Junction\\Data\\drone_moving-20251114T191633Z-1-002\\drone_moving\\drone_moving.dat",
         help="Path to .dat file (e.g., path/to/drone_moving.dat)"
     )
     parser.add_argument(
@@ -353,6 +495,9 @@ def main() -> None:
     propeller_history = []
     propeller_timestamps = []
     rolling_window_us = 100000000  # 10 seconds in microseconds
+    
+    # RPM tracking
+    rpm_tracker = RPMTracker(roi_radius=40, min_windows=10, num_blades=2)
 
     print("Starting tracking loop... Press 'q' or ESC to quit.")
     print(f"Using settings: grid_size={args.grid_size}, min_density={args.min_density}, score_threshold={args.score_threshold}")
@@ -393,6 +538,11 @@ def main() -> None:
         # Calculate average propeller count (rounded up)
         avg_propellers = int(np.ceil(np.mean(propeller_history))) if propeller_history else 0
         
+        # Update RPM tracker
+        window_duration_us = int(args.window * 1000)
+        rpm_tracker.add_window(centroid, x_coords, y_coords, current_time_us, window_duration_us)
+        rpm, rpm_confidence = rpm_tracker.get_rpm()
+        
         if centroid is not None:
             prev_centroid = centroid
             prev_time_us = current_time_us
@@ -403,7 +553,8 @@ def main() -> None:
         
         frame = get_frame((x_coords, y_coords, polarities))
         draw_hud(frame, pacer, batch_range)
-        draw_tracking_overlay(frame, centroid, speed, avg_propellers, cluster_mask, x_coords, y_coords)
+        draw_tracking_overlay(frame, centroid, speed, avg_propellers, rpm, rpm_confidence, 
+                            rpm_tracker.roi_radius, cluster_mask, x_coords, y_coords)
         
         cv2.imshow("Drone Tracker (Propeller Signature)", frame)
 
