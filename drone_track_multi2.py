@@ -21,7 +21,6 @@ ROI_SIZE = 150
 TRACK_LOSS_THRESHOLD = 10
 
 # --- RPM Calculation Constants ---
-RPM_HISTORY_SIZE = 10  # Number of timestamps to store for RPM calculation
 RPM_UPDATE_INTERVAL = 5  # Calculate RPM every N frames
 
 class TrackingStatus(Enum):
@@ -208,7 +207,7 @@ def main():
     parser.add_argument("--dat", default=dat_file, help="Path to .dat file")
     parser.add_argument("--speed", type=float, default=1.0, help="Playback speed")
     parser.add_argument("--window", type=float, default=20.0, help="Window duration in ms")
-    parser.add_argument("--force-speed", action="store_true", help="Force playback speed")
+    parser.add_argument("--force-speed", action="store_true", default=True, help="Force playback speed")
     args = parser.parse_args()
 
     # Load recording to get timestamps
@@ -219,7 +218,7 @@ def main():
     pacer = Pacer(speed=args.speed, force_speed=args.force_speed)
     
     cv2.namedWindow("Drone Tracker - Multi", cv2.WINDOW_NORMAL)
-    cv2.resizeWindow("Drone Tracker - Multi", src.width, src.height)
+    cv2.setWindowProperty("Drone Tracker - Multi", cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
 
     status = TrackingStatus.SEARCHING
     last_overall_centroid = None

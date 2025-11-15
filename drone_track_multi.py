@@ -8,6 +8,7 @@ from scipy.signal import find_peaks
 try:
     from evio.core.pacer import Pacer
     from evio.source.dat_file import DatFileSource
+    from evio.core.recording import open_dat
 except ImportError:
     print("ERROR: evio library not found. Please install it as per the README.")
     exit(1)
@@ -208,6 +209,9 @@ def main():
     parser.add_argument("--force-speed", action="store_true", help="Force playback speed")
     args = parser.parse_args()
 
+    rec = open_dat(args.dat, width=1280, height=720)
+    timestamps = rec.timestamps
+    
     src = DatFileSource(args.dat, width=1280, height=720, window_length_us=args.window * 1000)
     pacer = Pacer(speed=args.speed, force_speed=args.force_speed)
     
@@ -224,7 +228,7 @@ def main():
 
     print("Starting tracking loop... Press 'q' or ESC to quit.")
     for batch in pacer.pace(src.ranges()):
-        x_full, y_full, p_full, ts_full = get_window_events(src.event_words, src.order, batch.start, batch.stop, src.timestamps)
+        x_full, y_full, p_full, ts_full = get_window_events(src.event_words, src.order, batch.start, batch.stop, timestamps)
 
         search_roi = None
         x_roi, y_roi, p_roi = x_full, y_full, p_full
