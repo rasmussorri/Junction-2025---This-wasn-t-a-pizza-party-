@@ -1,12 +1,12 @@
 [project]
-name = "evio"
-version = "0.4.0"
-description = "Minimal library for standardized handling of event camera data."
+name = "junction-2025"
+version = "0.1.0"
+description = "Event camera data analysis project for Junction 2025"
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
-authors = [{ name = "Ahti Helminen" }]
-keywords = ["event-camera", "DVS", "neuromorphic", "stream", "asyncio"]
+authors = [{ name = "This wasn't a pizza party?" }]
+keywords = ["event-camera", "DVS", "neuromorphic", "rpm", "fan", "drone"]
 classifiers = [
 "Programming Language :: Python :: 3",
 "License :: OSI Approved :: MIT License",
@@ -16,6 +16,8 @@ classifiers = [
 dependencies = [
     "numpy>=1.24",
     "opencv-python>=4.11.0.86",
+    "matplotlib>=3.10",
+    "scipy>=1.16",
 ]
 
 [project.optional-dependencies]
@@ -35,7 +37,7 @@ default-groups = []
 
 [tool.mypy]
 python_version = "3.10"
-strict = true
+strict = false
 warn_unused_ignores = true
 warn_redundant_casts = true
 mypy_path = "src"

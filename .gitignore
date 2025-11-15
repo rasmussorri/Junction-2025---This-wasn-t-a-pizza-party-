@@ -69,6 +69,13 @@ yarn.lock
 pip-log.txt
 pip-delete-this-directory.txt
 
-# Custom
-*cache
+# Data files
+*.dat
+.dat files/
 /data
+
+# Evio repository (external dependency installed via requirements.txt from GitHub)
+evio/
+
+# Cache files
+*cache
