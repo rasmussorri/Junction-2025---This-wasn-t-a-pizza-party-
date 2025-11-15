@@ -50,6 +50,80 @@ except ImportError:
 # and using bitwise operations for decoding is much faster than repeatedly reading from disk.
 # ---
 
+
+"""
+# --- 2. A Guide to Tuning the Tracker ---
+#
+# To improve performance, you don't need to change the code itself. Instead, you
+# can provide command-line arguments to tune the tracker's behavior.
+#
+# --- Key Parameters for Detection Sensitivity ---
+#
+# --grid_size (Default: 20)
+#    - What it is: The size of the square cells (in pixels) that the frame is divided into for analysis.
+#    - How it affects detection:
+#        - Smaller values (e.g., 15): Creates a finer grid. Good for detecting small, distant drones,
+#          but can be computationally slower and may split a single large drone into multiple parts.
+#        - Larger values (e.g., 40): Creates a coarser grid. Good for large, close drones, but may
+#          miss small ones entirely as their signal gets diluted in a large cell.
+#
+# --min_density (Default: 10)
+#    - What it is: The minimum number of events (both ON and OFF) that must be in a grid cell
+#      for it to even be considered a potential drone.
+#    - How it affects detection:
+#        - Lower values (e.g., 5): Makes the tracker more sensitive. It will consider cells with very
+#          faint signals, which is good for small drones but increases the risk of false positives from noise.
+#        - Higher values (e.g., 20): Makes the tracker less sensitive, requiring a strong signal.
+#          Good for ignoring noise but may miss faint targets.
+#
+# --score_threshold (Default: 10.0)
+#    - What it is: The minimum "propeller score" a cell must achieve to be classified as a drone.
+#      The score is a combination of event density and the balance of ON/OFF events.
+#    - How it affects detection:
+#        - Lower values (e.g., 8.0): Lowers the bar for detection. The tracker will be more likely to
+#          classify a flickering object as a drone, even if the signal is weak.
+#        - Higher values (e.g., 20.0): Requires a very clear, high-quality propeller signature.
+#          This is very effective at rejecting false positives (like blinking lights).
+#
+# --- Key Parameters for Tracking "Stickiness" ---
+#
+# --roi_size (Default: 150)
+#    - What it is: The size (in pixels) of the square "search box" (Region of Interest) that is
+#      drawn around a drone's last known position when the tracker is in TRACKING mode.
+#    - How it affects detection:
+#        - Larger values (e.g., 200): Gives a fast-moving drone more room to maneuver within the
+#          box without being lost. However, a very large box can be slow to process.
+#        - Smaller values (e.g., 100): Creates a tight search box, which is very fast to process
+#          and good for slow-moving or hovering drones. A fast drone might escape the box.
+#
+# --track_loss_threshold (Default: 10)
+#    - What it is: The number of consecutive frames the tracker can "lose" the drone before it
+#      gives up and reverts from TRACKING mode back to full-frame SEARCHING mode.
+#    - How it affects detection:
+#        - Higher values (e.g., 15): Makes the tracker more "patient". It will hold onto the last
+#          known location for longer, which is good for tracking drones that might temporarily
+#          disappear behind an object or have an intermittent signal.
+#        - Lower values (e.g., 3): Makes the tracker give up quickly. It will rapidly switch back
+#          to full-frame search, which can be disruptive and cause the "pausing" effect.
+# ---
+
+"""
+
+# --- 3. Constants for Algorithm Tuning ---
+# These parameters control the drone detection and tracking behavior.
+# They are defined here as constants so they can be easily modified without
+# changing the core logic of the script.
+
+# --- Detection Sensitivity ---
+GRID_SIZE = 20           # Size of the analysis grid cells (pixels). Smaller is more sensitive but slower.
+MIN_DENSITY = 5          # Minimum number of events in a cell to be a candidate.
+SCORE_THRESHOLD = 10.0   # Minimum "propeller score" for a cell to be classified as a drone.
+
+# --- Tracking "Stickiness" ---
+ROI_SIZE = 150           # Size of the search box (ROI) in pixels when in TRACKING mode.
+TRACK_LOSS_THRESHOLD = 10 # Number of frames to wait before giving up on a track and reverting to SEARCHING.
+
+
 class TrackingStatus(Enum):
     """Defines the current state of the tracker."""
     SEARCHING = 1  # Looking for a new target across the full frame
@@ -271,17 +345,6 @@ def main() -> None:
     parser.add_argument("--window", type=float, default=20.0, help="Window duration in ms (default: 20.0)")
     parser.add_argument("--force-speed", action="store_true", help="Force playback speed by dropping windows")
     
-    # --- Algorithm Tuning Parameters ---
-    # These allow you to adjust the sensitivity of the detection algorithm.
-    parser.add_argument("--grid_size", type=int, default=20, help="Size of analysis grid cells (default: 20)")
-    parser.add_argument("--min_density", type=int, default=10, help="Minimum events in a cell to be a candidate (default: 10)")
-    parser.add_argument("--score_threshold", type=float, default=15.0, help="Minimum propeller score for detection (default: 15.0)")
-    
-    # --- Track-Lock Tuning Parameters ---
-    # These control the behavior of the "track-lock" state machine.
-    parser.add_argument("--roi_size", type=int, default=150, help="Size of the search box (ROI) when tracking (default: 150)")
-    parser.add_argument("--track_loss_threshold", type=int, default=5, help="Frames to wait before reverting to SEARCHING mode (default: 5)")
-    
     args = parser.parse_args()
 
     # 1. Load data source using the evio library.
@@ -317,7 +380,7 @@ def main() -> None:
             # --- A. We are locked on. Only search in a small box. ---
             
             # Define the search box (Region of Interest or ROI) around the last known position.
-            half_roi = args.roi_size // 2
+            half_roi = ROI_SIZE // 2
             x1 = max(0, last_centroid[0] - half_roi)
             y1 = max(0, last_centroid[1] - half_roi)
             x2 = min(src.width, last_centroid[0] + half_roi)
@@ -339,9 +402,9 @@ def main() -> None:
         centroid, _ = find_drone_hotspot(
             x_roi, y_roi, pol_roi,
             width=src.width, height=src.height,
-            grid_size=args.grid_size,
-            min_density=args.min_density,
-            score_threshold=args.score_threshold
+            grid_size=GRID_SIZE,
+            min_density=MIN_DENSITY,
+            score_threshold=SCORE_THRESHOLD
         )
 
         # --- Update Tracking State for the *Next* Frame ---
@@ -357,7 +420,7 @@ def main() -> None:
             # We did not find it in this frame.
             frames_since_last_seen += 1
             # If we've lost the drone for too many consecutive frames...
-            if frames_since_last_seen > args.track_loss_threshold:
+            if frames_since_last_seen > TRACK_LOSS_THRESHOLD:
                 # ...revert to full-frame SEARCHING mode to find it again.
                 status = TrackingStatus.SEARCHING
                 last_centroid = None

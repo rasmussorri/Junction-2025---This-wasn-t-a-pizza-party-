@@ -2,6 +2,8 @@ import argparse
 from enum import Enum
 import cv2
 import numpy as np
+from collections import deque
+from scipy.signal import find_peaks
 
 try:
     from evio.core.pacer import Pacer
@@ -17,19 +19,101 @@ SCORE_THRESHOLD = 20.0
 ROI_SIZE = 150
 TRACK_LOSS_THRESHOLD = 10
 
+# --- RPM Calculation Constants ---
+RPM_HISTORY_SIZE = 10  # Number of timestamps to store for RPM calculation
+RPM_UPDATE_INTERVAL = 5  # Calculate RPM every N frames
+
 class TrackingStatus(Enum):
     """Defines the current state of the tracker."""
     SEARCHING = 1
     TRACKING = 2
 
-def get_window_events(event_words: np.ndarray, time_order: np.ndarray, win_start: int, win_stop: int):
+class RPMCalculator:
+    def __init__(self):
+        self.last_rpm = 0
+        self.frame_count = 0
+
+    def calculate(self, x, y, p, ts, centroid, roi_size):
+        self.frame_count += 1
+        if self.frame_count % RPM_UPDATE_INTERVAL != 0:
+            return self.last_rpm
+
+        half_roi = roi_size // 2
+        cx, cy = centroid
+        x1, y1 = cx - half_roi, cy - half_roi
+        x2, y2 = cx + half_roi, cy + half_roi
+
+        mask = (x >= x1) & (x < x2) & (y >= y1) & (y < y2)
+        
+        propeller_ts = ts[mask]
+        if len(propeller_ts) < 50: # Need enough events for FFT
+            return self.last_rpm
+
+        # Use FFT to find the frequency of blade passes
+        propeller_ts = np.sort(propeller_ts)
+        time_diffs = np.diff(propeller_ts)
+        
+        # We need to work with a regularly sampled signal for FFT
+        # So we'll histogram the timestamps
+        if len(time_diffs) == 0:
+            return self.last_rpm
+            
+        # Bin timestamps to create a signal
+        # The bin size is crucial. Let's try to make it adaptive.
+        # A high RPM (e.g., 7000 RPM) means ~116 rotations/sec. For a 2-blade prop, that's 233 Hz.
+        # Nyquist theorem says we need to sample at > 466 Hz.
+        # Let's use a bin size that gives us a sampling rate of ~1000 Hz.
+        t_start, t_end = propeller_ts[0], propeller_ts[-1]
+        duration_s = (t_end - t_start) / 1e6  # Timestamps are in microseconds
+        if duration_s == 0:
+            return self.last_rpm
+
+        num_bins = int(duration_s * 2000) # Aim for 2kHz sampling rate
+        if num_bins < 2:
+            return self.last_rpm
+
+        hist, bin_edges = np.histogram(propeller_ts, bins=num_bins)
+        
+        # Perform FFT
+        fft_result = np.fft.fft(hist)
+        fft_freq = np.fft.fftfreq(len(hist), d=duration_s / num_bins)
+
+        # Find the peak frequency (ignoring the DC component at index 0)
+        # We are looking for a peak in a plausible RPM range (e.g., 1000-10000 RPM)
+        # which corresponds to a frequency range for a 2-blade prop.
+        # 1000 RPM = 16.6 RPS = 33.3 Hz for 2 blades
+        # 10000 RPM = 166.6 RPS = 333.3 Hz for 2 blades
+        min_freq = 30
+        max_freq = 400
+        
+        idx = np.where((fft_freq > min_freq) & (fft_freq < max_freq))
+        if len(idx[0]) == 0:
+            return self.last_rpm
+
+        peak_idx = idx[0][np.argmax(np.abs(fft_result[idx]))]
+        peak_freq = fft_freq[peak_idx]
+        
+        # Frequency corresponds to blade passes. For a 2-blade prop, divide by 2 for rotations.
+        rotations_per_second = peak_freq / 2.0
+        rpm = rotations_per_second * 60
+
+        # Simple smoothing
+        if self.last_rpm == 0:
+            self.last_rpm = rpm
+        else:
+            self.last_rpm = (self.last_rpm * 0.9) + (rpm * 0.1)
+        
+        return self.last_rpm
+
+def get_window_events(event_words: np.ndarray, time_order: np.ndarray, win_start: int, win_stop: int, timestamps: np.ndarray):
     """Extracts and decodes a slice of event data."""
     event_indexes = time_order[win_start:win_stop]
     words = event_words[event_indexes].astype(np.uint32, copy=False)
+    ts = timestamps[event_indexes]
     x = (words & 0x3FFF).astype(np.int32, copy=False)
     y = ((words >> 14) & 0x3FFF).astype(np.int32, copy=False)
     p = ((words >> 28) & 0xF) > 0
-    return x, y, p
+    return x, y, p, ts
 
 def find_propellers(x, y, p, width, height):
     """
@@ -88,7 +172,7 @@ def render_frame(x, y, p, width, height):
     frame[y[~p], x[~p]] = (100, 100, 100)
     return frame
 
-def draw_hud(frame, status, propellers, overall_centroid, roi):
+def draw_hud(frame, status, propellers, overall_centroid, roi, rpm):
     """Draws the HUD, marking all propellers and the overall center."""
     if status == TrackingStatus.TRACKING and propellers:
         color = (0, 255, 0)
@@ -110,6 +194,11 @@ def draw_hud(frame, status, propellers, overall_centroid, roi):
         text = "STATUS: SEARCHING"
     
     cv2.putText(frame, text, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2)
+    
+    # Display RPM
+    rpm_text = f"RPM: {int(rpm)}"
+    text_size, _ = cv2.getTextSize(rpm_text, cv2.FONT_HERSHEY_SIMPLEX, 0.7, 2)
+    cv2.putText(frame, rpm_text, (frame.shape[1] - text_size[0] - 10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
 
 def main():
     parser = argparse.ArgumentParser(description="Multi-propeller drone tracker.")
@@ -129,9 +218,13 @@ def main():
     last_overall_centroid = None
     frames_since_last_seen = 0
     
+    rpm_calculator = RPMCalculator()
+    current_rpm = 0
+    tracked_propeller_idx = 0 # Track the first propeller for RPM
+
     print("Starting tracking loop... Press 'q' or ESC to quit.")
     for batch in pacer.pace(src.ranges()):
-        x_full, y_full, p_full = get_window_events(src.event_words, src.order, batch.start, batch.stop)
+        x_full, y_full, p_full, ts_full = get_window_events(src.event_words, src.order, batch.start, batch.stop, src.timestamps)
 
         search_roi = None
         x_roi, y_roi, p_roi = x_full, y_full, p_full
@@ -159,14 +252,25 @@ def main():
             )
             last_overall_centroid = overall_centroid
             frames_since_last_seen = 0
+
+            # --- RPM Calculation ---
+            if tracked_propeller_idx < len(propellers):
+                prop_centroid = propellers[tracked_propeller_idx]
+                # Use a smaller ROI for RPM calculation to isolate the propeller
+                current_rpm = rpm_calculator.calculate(x_full, y_full, p_full, ts_full, prop_centroid, roi_size=50)
+            else:
+                # If the tracked propeller is lost, reset RPM
+                current_rpm = 0
+
         else:
             frames_since_last_seen += 1
             if frames_since_last_seen > TRACK_LOSS_THRESHOLD:
                 status = TrackingStatus.SEARCHING
                 last_overall_centroid = None
+                current_rpm = 0
 
         frame = render_frame(x_full, y_full, p_full, src.width, src.height)
-        draw_hud(frame, status, propellers, last_overall_centroid, search_roi)
+        draw_hud(frame, status, propellers, last_overall_centroid, search_roi, current_rpm)
         cv2.imshow("Drone Tracker - Multi", frame)
 
         if (cv2.waitKey(1) & 0xFF) in (27, ord("q")):
